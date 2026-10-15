@@ -282,10 +282,9 @@
       const [syncCodeInput, setSyncCodeInput] = useState('');
       const [syncNotice, setSyncNotice] = useState('');
 
-      // 默认升级为 gemini-3.0-flash，并支持自定义修改模型名
+      // 支持智谱 GLM-4V-Flash (免费免绑卡)、Gemini、OpenAI
       const [aiConfig, setAiConfig] = useState(() => {
-        const saved = safeGetStorage('macro_ai_config_v7', { provider: 'gemini', apiKey: '', model: 'gemini-3.0-flash' });
-        if (!saved.model || saved.model === 'gemini-2.5-flash') saved.model = 'gemini-3.0-flash';
+        const saved = safeGetStorage('macro_ai_config_v7', { provider: 'zhipu', apiKey: '', model: 'glm-4v-flash' });
         return saved;
       });
       const [aiLoading, setAiLoading] = useState(false);
@@ -483,7 +482,7 @@
 
         if (!aiConfig.apiKey || !aiConfig.apiKey.trim()) {
           setShowSystemSettings(true);
-          alert('⚠️ 请先在右上角展开的设置面板中填入你的 Gemini 或 OpenAI API Key。');
+          alert('⚠️ 请先在右上角展开的设置面板中填入你的 API Key。');
           return;
         }
 
@@ -495,11 +494,11 @@
           const { dataUrl, base64Data, mimeType } = await compressImageFile(file);
           setAiPreviewUrl(dataUrl);
 
-          const promptText = `你是一位精通中国菜（尤其是川菜、巴蜀小吃）与亚洲美食的专业营养师。请识别这张图片中的食物或营养成分表，估算其可食部重量，严格只返回如下纯 JSON 对象（不要代码块包裹）：{"foods":[{"name":"食物名称(含估算克数)","carb":碳水克数,"pro":蛋白质克数,"fat":脂肪克数,"note":"简短依据"}]}`;
+          const promptText = `你是一位精通中国菜（尤其是川菜、巴蜀小吃）与亚洲美食的专业营养师。请识别这张图片中的食物或营养成分表，估算其可食部重量，严格只返回如下纯 JSON 对象（不要任何markdown代码块包裹，不要其他解释文字）：{"foods":[{"name":"食物名称(含估算克数)","carb":碳水克数数字,"pro":蛋白质克数数字,"fat":脂肪克数数字,"note":"简短依据"}]}`;
           let rawResultText = '';
-          const geminiModel = (aiConfig.model || 'gemini-3.0-flash').trim();
 
           if (aiConfig.provider === 'gemini') {
+            const geminiModel = (aiConfig.model || 'gemini-2.0-flash').trim();
             const resp = await fetch(
               `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${aiConfig.apiKey.trim()}`,
               {
@@ -514,12 +513,30 @@
             const data = await resp.json();
             if (!resp.ok) throw new Error(data.error?.message || 'Gemini API 请求失败');
             rawResultText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+          } else if (aiConfig.provider === 'zhipu') {
+            const resp = await fetch('https://open.bigmodel.cn/api/paas/v4/chat/completions', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${aiConfig.apiKey.trim()}` },
+              body: JSON.stringify({
+                model: (aiConfig.model || 'glm-4v-flash').trim(),
+                messages: [{
+                  role: 'user',
+                  content: [
+                    { type: 'text', text: promptText },
+                    { type: 'image_url', image_url: { url: dataUrl } }
+                  ]
+                }]
+              })
+            });
+            const data = await resp.json();
+            if (!resp.ok) throw new Error(data.error?.message || '智谱 API 请求失败');
+            rawResultText = data.choices?.[0]?.message?.content || '';
           } else {
             const resp = await fetch('https://api.openai.com/v1/chat/completions', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${aiConfig.apiKey.trim()}` },
               body: JSON.stringify({
-                model: 'gpt-4o-mini',
+                model: (aiConfig.model || 'gpt-4o-mini').trim(),
                 response_format: { type: 'json_object' },
                 messages: [{ role: 'user', content: [{ type: 'text', text: promptText }, { type: 'image_url', image_url: { url: dataUrl } }] }]
               })
@@ -529,7 +546,9 @@
             rawResultText = data.choices?.[0]?.message?.content || '';
           }
 
-          const parsed = JSON.parse(rawResultText.replace(/```json|```/g, '').trim());
+          const jsonMatch = rawResultText.match(/\{[\s\S]*\}/);
+          const cleanJson = jsonMatch ? jsonMatch[0] : rawResultText.replace(/```json|```/g, '').trim();
+          const parsed = JSON.parse(cleanJson);
           const list = parsed.foods || [];
           if (list.length === 0) {
             setAiError('未识别出明确食物，请换个角度重试。');
@@ -570,9 +589,9 @@
 体重${activeWeight}kg，目标${(GOAL_CONFIGS[profile.goal] || GOAL_CONFIGS.cut).label}，TDEE ${targets.tdee}kcal，目标摄入${targets.cal}kcal，今日实际摄入${totals.cal}kcal(碳水${totals.carb}g/蛋白${totals.pro}g/脂肪${totals.fat}g)，运动消耗${burnedCalories}kcal，净热量缺口${actualDeficit}kcal。今日吃了：${mealsSummary || '未记录'}；运动：${workoutSummary || '未记录'}。`;
 
           let resultAdvice = '';
-          const geminiModel = (aiConfig.model || 'gemini-3.0-flash').trim();
 
           if (aiConfig.provider === 'gemini') {
+            const geminiModel = (aiConfig.model || 'gemini-2.0-flash').trim();
             const resp = await fetch(
               `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${aiConfig.apiKey.trim()}`,
               {
@@ -584,6 +603,15 @@
             const data = await resp.json();
             if (!resp.ok) throw new Error(data.error?.message || 'Gemini 请求失败');
             resultAdvice = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+          } else if (aiConfig.provider === 'zhipu') {
+            const resp = await fetch('https://open.bigmodel.cn/api/paas/v4/chat/completions', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${aiConfig.apiKey.trim()}` },
+              body: JSON.stringify({ model: 'glm-4-flash', messages: [{ role: 'user', content: advicePrompt }] })
+            });
+            const data = await resp.json();
+            if (!resp.ok) throw new Error(data.error?.message || '智谱请求失败');
+            resultAdvice = data.choices?.[0]?.message?.content || '';
           } else {
             const resp = await fetch('https://api.openai.com/v1/chat/completions', {
               method: 'POST',
@@ -602,7 +630,7 @@
         }
       };
 
-      const buildBackupPayload = () => ({ version: 'v8.3', exportedAt: new Date().toISOString(), profile, aiConfig, historyDB });
+      const buildBackupPayload = () => ({ version: 'v8.4', exportedAt: new Date().toISOString(), profile, aiConfig, historyDB });
 
       const downloadJsonBackup = () => {
         const blob = new Blob([JSON.stringify(buildBackupPayload(), null, 2)], { type: 'application/json;charset=utf-8;' });
@@ -655,12 +683,19 @@
         document.body.appendChild(link); link.click(); document.body.removeChild(link);
       };
 
+      const handleProviderChange = (newProvider) => {
+        let defaultModel = 'glm-4v-flash';
+        if (newProvider === 'gemini') defaultModel = 'gemini-2.0-flash';
+        if (newProvider === 'openai') defaultModel = 'gpt-4o-mini';
+        setAiConfig({ ...aiConfig, provider: newProvider, model: defaultModel });
+      };
+
       return (
         <div className="max-w-xl mx-auto px-4 py-4 md:py-8 space-y-4">
           <header className="flex items-center justify-between pb-2 border-b border-slate-200">
             <h1 className="text-base sm:text-lg font-black text-slate-800 tracking-tight flex items-center gap-1.5">
               <span>🥗 膳食与运动追踪</span>
-              <span className="text-[10px] font-semibold bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded border border-indigo-200">v8.3 稳定版</span>
+              <span className="text-[10px] font-semibold bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded border border-indigo-200">v8.4 免绑卡版</span>
             </h1>
             <div className="flex items-center gap-1">
               <button type="button" onClick={() => setSelectedDate(shiftDateStr(selectedDate, -1))} className="px-1.5 py-1 text-slate-500 hover:bg-slate-100 rounded text-xs font-semibold">◀</button>
@@ -677,15 +712,16 @@
                 <button type="button" onClick={() => setShowSystemSettings(false)} className="text-slate-400">✕ 关闭</button>
               </div>
               <div className="space-y-2">
-                <label className="block text-slate-400 font-semibold">AI 视觉模型与 API Key（仅保存在当前设备本地）</label>
+                <label className="block text-slate-400 font-semibold">AI 视觉模型与 API Key（推荐使用智谱免费版，免绑卡免VPN）</label>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                  <select value={aiConfig.provider} onChange={e => setAiConfig({ ...aiConfig, provider: e.target.value })} className="rounded bg-slate-800 border border-slate-700 px-2.5 py-1.5 text-white">
+                  <select value={aiConfig.provider} onChange={e => handleProviderChange(e.target.value)} className="rounded bg-slate-800 border border-slate-700 px-2.5 py-1.5 text-white">
+                    <option value="zhipu">智谱 GLM-4V (免费免绑卡/免VPN)</option>
                     <option value="gemini">Google Gemini</option>
                     <option value="openai">OpenAI (gpt-4o-mini)</option>
                   </select>
-                  <input type="text" placeholder="模型名称 (如 gemini-3.0-flash)" value={aiConfig.model || 'gemini-3.0-flash'} onChange={e => setAiConfig({ ...aiConfig, model: e.target.value })} className="rounded bg-slate-800 border border-slate-700 px-2.5 py-1.5 text-indigo-300 font-mono" />
+                  <input type="text" placeholder="模型名称" value={aiConfig.model || 'glm-4v-flash'} onChange={e => setAiConfig({ ...aiConfig, model: e.target.value })} className="rounded bg-slate-800 border border-slate-700 px-2.5 py-1.5 text-indigo-300 font-mono" />
                 </div>
-                <input type="password" placeholder="在此粘贴 AIzaSy... 或 sk-... 密钥" value={aiConfig.apiKey} onChange={e => setAiConfig({ ...aiConfig, apiKey: e.target.value })} className="w-full rounded bg-slate-800 border border-slate-700 px-2.5 py-1.5 text-white" />
+                <input type="password" placeholder="在此粘贴你的 API Key" value={aiConfig.apiKey} onChange={e => setAiConfig({ ...aiConfig, apiKey: e.target.value })} className="w-full rounded bg-slate-800 border border-slate-700 px-2.5 py-1.5 text-white" />
               </div>
               <div className="space-y-2 border-t border-slate-800/80 pt-2.5">
                 <span className="text-slate-400 block font-semibold">设备间同步 / 备份</span>
