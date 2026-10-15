@@ -66,6 +66,56 @@
       });
     };
 
+    // 智能 JSON 提取器：解决大模型在 JSON 后追加额外字符或拆分多个块导致的解析报错
+    const parseAiFoodsJson = (rawText) => {
+      if (!rawText || typeof rawText !== 'string') return [];
+      const cleaned = rawText.replace(/```json|```/gi, '').trim();
+
+      // 1. 尝试直接解析
+      try {
+        const direct = JSON.parse(cleaned);
+        if (Array.isArray(direct)) return direct;
+        if (Array.isArray(direct.foods)) return direct.foods;
+        if (direct.name) return [direct];
+      } catch (e) {}
+
+      // 2. 括号平衡扫描法：提取文本中所有顶层 {...} 对象
+      const extractedObjects = [];
+      let depth = 0, startIdx = -1, inStr = false, escape = false;
+      for (let i = 0; i < cleaned.length; i++) {
+        const ch = cleaned[i];
+        if (escape) { escape = false; continue; }
+        if (ch === '\\' && inStr) { escape = true; continue; }
+        if (ch === '"') { inStr = !inStr; continue; }
+        if (!inStr) {
+          if (ch === '{') {
+            if (depth === 0) startIdx = i;
+            depth++;
+          } else if (ch === '}') {
+            depth--;
+            if (depth === 0 && startIdx !== -1) {
+              const candidate = cleaned.slice(startIdx, i + 1);
+              try {
+                const obj = JSON.parse(candidate);
+                extractedObjects.push(obj);
+              } catch (err) {}
+              startIdx = -1;
+            }
+          }
+        }
+      }
+
+      const finalFoods = [];
+      for (const obj of extractedObjects) {
+        if (Array.isArray(obj.foods)) {
+          finalFoods.push(...obj.foods);
+        } else if (obj.name && (obj.carb !== undefined || obj.pro !== undefined || obj.fat !== undefined)) {
+          finalFoods.push(obj);
+        }
+      }
+      return finalFoods;
+    };
+
     const FOOD_CATEGORIES = ['全部', '川味面点/抄手', '川菜/江湖菜', '川渝小吃/卤味', '巴蜀零食/糕点', '川渝茶饮/特饮', '食阁/熟食', '中式/夜市', '日韩料理', '便利店', '手摇饮/咖啡', '亚洲甜品/烘焙'];
 
     const EXERCISE_DB = [
@@ -282,7 +332,6 @@
       const [syncCodeInput, setSyncCodeInput] = useState('');
       const [syncNotice, setSyncNotice] = useState('');
 
-      // 支持智谱 GLM-4V-Flash (免费免绑卡)、Gemini、OpenAI
       const [aiConfig, setAiConfig] = useState(() => {
         const saved = safeGetStorage('macro_ai_config_v7', { provider: 'zhipu', apiKey: '', model: 'glm-4v-flash' });
         return saved;
@@ -494,7 +543,7 @@
           const { dataUrl, base64Data, mimeType } = await compressImageFile(file);
           setAiPreviewUrl(dataUrl);
 
-          const promptText = `你是一位精通中国菜（尤其是川菜、巴蜀小吃）与亚洲美食的专业营养师。请识别这张图片中的食物或营养成分表，估算其可食部重量，严格只返回如下纯 JSON 对象（不要任何markdown代码块包裹，不要其他解释文字）：{"foods":[{"name":"食物名称(含估算克数)","carb":碳水克数数字,"pro":蛋白质克数数字,"fat":脂肪克数数字,"note":"简短依据"}]}`;
+          const promptText = `你是一位精通中国菜（尤其是川菜、巴蜀小吃）与亚洲美食的专业营养师。请识别这张图片中的食物或营养成分表，估算其可食部重量，仅输出如下格式的纯 JSON 对象，严禁输出任何其他多余文字或注释：{"foods":[{"name":"食物名称(含估算克数)","carb":碳水克数数字,"pro":蛋白质克数数字,"fat":脂肪克数数字,"note":"简短依据"}]}`;
           let rawResultText = '';
 
           if (aiConfig.provider === 'gemini') {
@@ -546,12 +595,9 @@
             rawResultText = data.choices?.[0]?.message?.content || '';
           }
 
-          const jsonMatch = rawResultText.match(/\{[\s\S]*\}/);
-          const cleanJson = jsonMatch ? jsonMatch[0] : rawResultText.replace(/```json|```/g, '').trim();
-          const parsed = JSON.parse(cleanJson);
-          const list = parsed.foods || [];
+          const list = parseAiFoodsJson(rawResultText);
           if (list.length === 0) {
-            setAiError('未识别出明确食物，请换个角度重试。');
+            setAiError('未识别出明确食物，请换个清晰角度重试。');
           } else {
             setAiDetectedFoods(list.map((f, i) => {
               const carb = +(Number(f.carb) || 0).toFixed(1), pro = +(Number(f.pro) || 0).toFixed(1), fat = +(Number(f.fat) || 0).toFixed(1);
@@ -630,7 +676,7 @@
         }
       };
 
-      const buildBackupPayload = () => ({ version: 'v8.4', exportedAt: new Date().toISOString(), profile, aiConfig, historyDB });
+      const buildBackupPayload = () => ({ version: 'v8.5', exportedAt: new Date().toISOString(), profile, aiConfig, historyDB });
 
       const downloadJsonBackup = () => {
         const blob = new Blob([JSON.stringify(buildBackupPayload(), null, 2)], { type: 'application/json;charset=utf-8;' });
@@ -695,7 +741,7 @@
           <header className="flex items-center justify-between pb-2 border-b border-slate-200">
             <h1 className="text-base sm:text-lg font-black text-slate-800 tracking-tight flex items-center gap-1.5">
               <span>🥗 膳食与运动追踪</span>
-              <span className="text-[10px] font-semibold bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded border border-indigo-200">v8.4 免绑卡版</span>
+              <span className="text-[10px] font-semibold bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded border border-indigo-200">v8.5 终极版</span>
             </h1>
             <div className="flex items-center gap-1">
               <button type="button" onClick={() => setSelectedDate(shiftDateStr(selectedDate, -1))} className="px-1.5 py-1 text-slate-500 hover:bg-slate-100 rounded text-xs font-semibold">◀</button>
