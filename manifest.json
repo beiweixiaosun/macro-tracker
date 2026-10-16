@@ -1,0 +1,18 @@
+{
+  "name": "膳食营养与运动追踪",
+  "short_name": "膳食追踪",
+  "start_url": "/macro-tracker/index.html",
+  "scope": "/macro-tracker/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f8fafc",
+  "theme_color": "#4f46e5",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/3227/3227848.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
