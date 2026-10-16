@@ -1,0 +1,89 @@
+name: 自动生成安卓APK安装包
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-android-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. 拉取最新网页代码
+        uses: actions/checkout@v4
+
+      - name: 2. 配置 Java 17 编译环境
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: 3. 配置 Android SDK 官方打包工具
+        uses: android-actions/setup-android@v3
+
+      - name: 4. 自动为你的 APK 生成专属安卓数字签名并盖章
+        run: |
+          # 如果你有之前 PWABuilder 生成的未签名包，或者我们直接在云端用 Android 极速壳打包签名
+          keytool -genkey -v -keystore release-key.keystore -alias macrotracker -keyalg RSA -keysize 2048 -validity 10000 -storepass 123456 -keypass 123456 -dname "CN=MacroTracker, OU=Dev, O=Beiwei, L=Chengdu, S=Sichuan, C=CN"
+
+      - name: 5. 使用 Bubblewrap 全自动构建已签名 APK
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 6. 生成 TWA 安卓工程并编译签名 APK
+        run: |
+          npm install -g @bubblewrap/cli
+          mkdir -p ~/.bubblewrap
+          echo '{"jdkPath":"/usr/lib/jvm/temurin-17-jdk-amd64","androidSdkPath":"/usr/local/lib/android/sdk"}' > ~/.bubblewrap/config.json
+          
+          cat << 'EOF' > twa-manifest.json
+          {
+            "packageId": "io.github.beiweixiaosun.twa",
+            "host": "beiweixiaosun.github.io",
+            "name": "膳食追踪",
+            "launcherName": "膳食追踪",
+            "display": "standalone",
+            "themeColor": "#4F46E5",
+            "navigationColor": "#FFFFFF",
+            "navigationColorDark": "#0F172A",
+            "navigationDividerColor": "#E2E8F0",
+            "navigationDividerColorDark": "#1E293B",
+            "backgroundColor": "#F8FAFC",
+            "enableNotifications": true,
+            "startUrl": "/macro-tracker/index.html",
+            "iconUrl": "https://cdn-icons-png.flaticon.com/512/3227/3227848.png",
+            "maskableIconUrl": "https://cdn-icons-png.flaticon.com/512/3227/3227848.png",
+            "appVersionName": "1.0.0",
+            "appVersionCode": 1,
+            "shortcuts": [],
+            "generatorApp": "bubblewrap-cli",
+            "webManifestUrl": "https://beiweixiaosun.github.io/macro-tracker/manifest.json",
+            "fallbackType": "customtabs",
+            "features": {},
+            "alphaDependencies": { "enabled": false },
+            "enableSiteSettingsShortcut": true,
+            "isChromeOSOnly": false,
+            "isMetaQuest": false,
+            "fullScopeUrl": "https://beiweixiaosun.github.io/macro-tracker/",
+            "minSdkVersion": 21,
+            "orientation": "portrait",
+            "fingerprints": [],
+            "additionalTrustedOrigins": [],
+            "retainedBundles": [],
+            "SigningKey": {
+              "path": "./release-key.keystore",
+              "alias": "macrotracker"
+            }
+          }
+          EOF
+
+          bubblewrap update --skipVersionUpgrade
+          BUBBLEWRAP_KEYSTORE_PASSWORD=123456 BUBBLEWRAP_KEY_PASSWORD=123456 bubblewrap build --skipPwaValidation
+          mv app-release-signed.apk 膳食追踪-已签名正式版.apk
+
+      - name: 7. 上传生成好的 APK 供你直接下载
+        uses: actions/upload-artifact@v4
+        with:
+          name: 膳食追踪-安卓安装包-已签名
+          path: 膳食追踪-已签名正式版.apk
