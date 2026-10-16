@@ -22,14 +22,23 @@
       color: #0f172a;
       overscroll-behavior-y: none;
     }
-    /* 隐藏滚动条但保留滑动功能，让手机界面更干净 */
     .no-scrollbar::-webkit-scrollbar { display: none; }
     .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
-    /* 适配全面屏手机底部安全区 */
     .pb-safe { padding-bottom: calc(5.5rem + env(safe-area-inset-bottom, 0px)); }
     .bottom-nav-safe { padding-bottom: env(safe-area-inset-bottom, 0px); }
-    /* 防止手机点击输入框时自动放大页面 */
     input, select, textarea { font-size: 16px !important; }
+    /* 让透明的日期选择器铺满整个胶囊按钮，确保手机端和APK点击100%弹出日历 */
+    .date-overlay-input::-webkit-calendar-picker-indicator {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      width: 100%;
+      height: 100%;
+      opacity: 0;
+      cursor: pointer;
+    }
   </style>
 </head>
 <body class="min-h-screen selection:bg-indigo-100">
@@ -54,12 +63,14 @@
       return `${y}-${m}-${d}`;
     };
 
+    // 增强版日期加减：兼容 '-' 和 '/' 分隔符，杜绝 NaN 导致无法切换
     const shiftDateStr = (dateStr, days) => {
       if (!dateStr || typeof dateStr !== 'string') return getLocalDateStr();
-      const parts = dateStr.split('-').map(Number);
+      const cleanStr = dateStr.trim().replace(/\//g, '-');
+      const parts = cleanStr.split('-').map(Number);
       if (parts.length !== 3 || parts.some(isNaN)) return getLocalDateStr();
-      const dt = new Date(parts[0], parts[1] - 1, parts[2]);
-      dt.setDate(dt.getDate() + days);
+      const dt = new Date(parts[0], parts[1] - 1, parts[2], 12, 0, 0);
+      dt.setDate(dt.getDate() + Number(days));
       return getLocalDateStr(dt);
     };
 
@@ -334,8 +345,10 @@
       const todayStr = getLocalDateStr();
       const [selectedDate, setSelectedDate] = useState(todayStr);
       const [trendRange, setTrendRange] = useState(7);
-      const [currentStep, setCurrentStep] = useState(2); // 默认打开最常用的第2页(记饮食)，也随时可切回第1页
+      const [currentStep, setCurrentStep] = useState(2);
       const [showSystemSettings, setShowSystemSettings] = useState(false);
+
+      const dateInputRef = useRef(null);
 
       const [importMode, setImportMode] = useState('merge');
       const [syncCodeInput, setSyncCodeInput] = useState('');
@@ -392,6 +405,27 @@
       useEffect(() => { try { localStorage.setItem('macro_history_v5', JSON.stringify(historyDB)); } catch (e) {} }, [historyDB]);
       useEffect(() => { try { localStorage.setItem('macro_ai_config_v7', JSON.stringify(aiConfig)); } catch (e) {} }, [aiConfig]);
       useEffect(() => { try { localStorage.setItem('macro_user_foods_v8', JSON.stringify(userCustomDB)); } catch (e) {} }, [userCustomDB]);
+
+      // 切换日期时自动清空临时 AI 预览，避免混淆不同日期的临时结果
+      const changeDateByDays = (deltaDays) => {
+        setSelectedDate(prev => shiftDateStr(prev, deltaDays));
+        setAiAdvice('');
+      };
+
+      const openNativeDatePicker = () => {
+        if (dateInputRef.current) {
+          try {
+            if (typeof dateInputRef.current.showPicker === 'function') {
+              dateInputRef.current.showPicker();
+            } else {
+              dateInputRef.current.focus();
+              dateInputRef.current.click();
+            }
+          } catch (e) {
+            dateInputRef.current.focus();
+          }
+        }
+      };
 
       const currentDayData = (historyDB && historyDB[selectedDate]) ? historyDB[selectedDate] : { weight: profile.weight, meals: [], workouts: [] };
       const meals = Array.isArray(currentDayData.meals) ? currentDayData.meals : [];
@@ -452,16 +486,14 @@
       const actualDeficit = (targets.tdee + burnedCalories) - totals.cal;
       const weeklyWeightChangeKg = ((actualDeficit * 7) / 7700).toFixed(2);
 
-      // 智能提醒状态计算
       const smartAlerts = useMemo(() => {
         const list = [];
-        // 1. 热量超标提醒
         if (calDiff < 0) {
           list.push({
             type: 'danger',
             icon: '🚨',
-            title: `今日热量已超标 ${Math.abs(calDiff)} kcal！`,
-            desc: '建议点击下方「去运动抵消」，快走或慢跑 30 分钟即可拉回安全线。',
+            title: `当日热量已超标 ${Math.abs(calDiff)} kcal！`,
+            desc: '建议点击右侧「去运动抵消」，快走或慢跑 30 分钟即可拉回安全线。',
             actionText: '去运动抵消 ▶',
             actionStep: 3
           });
@@ -469,11 +501,10 @@
           list.push({
             type: 'warn',
             icon: '⚠️',
-            title: `今日剩余额度仅剩 ${calDiff} kcal`,
+            title: `当日剩余额度仅剩 ${calDiff} kcal`,
             desc: '接近今日目标上限，下一餐建议以清汤、蔬菜或纯蛋白为主。'
           });
         }
-        // 2. 蛋白质不足提醒（当热量已经吃到 50% 以上，但蛋白质还不到 55%）
         const proGap = Math.round(targets.pro - totals.pro);
         if (totals.cal >= targets.cal * 0.5 && totals.pro < targets.pro * 0.55 && proGap >= 20) {
           list.push({
@@ -483,12 +514,11 @@
             desc: '碳水或油脂占比较高，建议加餐一颗茶叶蛋、无糖豆浆或即食鸡胸肉以防掉肌肉。'
           });
         }
-        // 3. 脂肪超标提醒
         if (totals.fat > targets.fat * 1.15) {
           list.push({
             type: 'warn',
             icon: '🫗',
-            title: `今日油脂摄入偏高 (${totals.fat}g / 目标${targets.fat}g)`,
+            title: `当日油脂摄入偏高 (${totals.fat}g / 目标${targets.fat}g)`,
             desc: '红油或汤底油脂较多，建议接下来多喝苦荞茶、绿茶或温水帮助代谢解腻。'
           });
         }
@@ -859,8 +889,8 @@
         try {
           const mealsSummary = meals.map(m => `${m.name}(${m.cal}kcal)`).join('、');
           const workoutSummary = workouts.map(w => `${w.name}(${w.mins}分/-${w.cal}kcal)`).join('、');
-          const advicePrompt = `你是资深运动营养师。根据用户今日数据给出300字以内的【今日点评与明日三餐/运动实操规划】：
-体重${activeWeight}kg，目标${(GOAL_CONFIGS[profile.goal] || GOAL_CONFIGS.cut).label}，TDEE ${targets.tdee}kcal，目标摄入${targets.cal}kcal，今日实际摄入${totals.cal}kcal(碳水${totals.carb}g/蛋白${totals.pro}g/脂肪${totals.fat}g)，运动消耗${burnedCalories}kcal，净热量缺口${actualDeficit}kcal。今日吃了：${mealsSummary || '未记录'}；运动：${workoutSummary || '未记录'}。`;
+          const advicePrompt = `你是资深运动营养师。根据用户 ${selectedDate} 当日数据给出300字以内的【当日点评与明日三餐/运动实操规划】：
+体重${activeWeight}kg，目标${(GOAL_CONFIGS[profile.goal] || GOAL_CONFIGS.cut).label}，TDEE ${targets.tdee}kcal，目标摄入${targets.cal}kcal，实际摄入${totals.cal}kcal(碳水${totals.carb}g/蛋白${totals.pro}g/脂肪${totals.fat}g)，运动消耗${burnedCalories}kcal，净热量缺口${actualDeficit}kcal。吃了：${mealsSummary || '未记录'}；运动：${workoutSummary || '未记录'}。`;
 
           let resultAdvice = '';
 
@@ -904,7 +934,7 @@
         }
       };
 
-      const buildBackupPayload = () => ({ version: 'v9.0', exportedAt: new Date().toISOString(), profile, aiConfig, historyDB, userCustomDB });
+      const buildBackupPayload = () => ({ version: 'v9.1', exportedAt: new Date().toISOString(), profile, aiConfig, historyDB, userCustomDB });
 
       const downloadJsonBackup = () => {
         const blob = new Blob([JSON.stringify(buildBackupPayload(), null, 2)], { type: 'application/json;charset=utf-8;' });
@@ -969,32 +999,73 @@
       const carbPct = Math.min(100, Math.round((totals.carb / Math.max(1, targets.carb)) * 100));
       const proPct = Math.min(100, Math.round((totals.pro / Math.max(1, targets.pro)) * 100));
       const fatPct = Math.min(100, Math.round((totals.fat / Math.max(1, targets.fat)) * 100));
+      const isToday = selectedDate === todayStr;
 
       return (
         <div className="max-w-lg mx-auto px-3.5 pt-3 pb-safe space-y-3.5">
-          {/* 1. 极简顶部导航与日期切换 */}
-          <header className="flex items-center justify-between bg-white px-4 py-3 rounded-2xl shadow-sm border border-slate-100">
-            <div className="flex items-center gap-2">
+          {/* 1. 顶部导航与增强版日期切换器 */}
+          <header className="flex items-center justify-between bg-white px-3.5 py-2.5 rounded-2xl shadow-sm border border-slate-100 gap-2">
+            <div className="flex items-center gap-1.5 shrink-0">
               <span className="text-xl">🥗</span>
               <div>
-                <h1 className="text-base font-black text-slate-900 leading-tight">膳食与运动</h1>
-                <span className="text-xs font-medium text-slate-400">v9.0 移动精修版</span>
+                <h1 className="text-sm font-black text-slate-900 leading-tight">膳食追踪</h1>
+                <span className="text-[10px] font-semibold text-indigo-600 block">v9.1 日期修复版</span>
               </div>
             </div>
 
-            <div className="flex items-center gap-1.5">
-              <button type="button" onClick={() => setSelectedDate(shiftDateStr(selectedDate, -1))} className="w-8 h-8 flex items-center justify-center bg-slate-100 active:bg-slate-200 rounded-xl text-slate-600 font-bold text-sm">◀</button>
-              <input
-                type="date"
-                value={selectedDate}
-                onChange={e => e.target.value && setSelectedDate(e.target.value)}
-                className="text-sm font-bold bg-indigo-50 text-indigo-700 rounded-xl px-2.5 py-1.5 border border-indigo-100 w-[130px] text-center"
-              />
-              <button type="button" onClick={() => setSelectedDate(shiftDateStr(selectedDate, 1))} className="w-8 h-8 flex items-center justify-center bg-slate-100 active:bg-slate-200 rounded-xl text-slate-600 font-bold text-sm">▶</button>
+            <div className="flex items-center gap-1">
+              {!isToday && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedDate(todayStr)}
+                  className="px-2 py-1.5 bg-amber-100 text-amber-800 rounded-xl font-black text-xs shrink-0 active:scale-95 transition"
+                >
+                  回今天
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => changeDateByDays(-1)}
+                className="w-9 h-9 flex items-center justify-center bg-slate-100 active:bg-indigo-100 active:text-indigo-700 rounded-xl text-slate-700 font-black text-sm select-none"
+                title="前一天"
+              >
+                ◀
+              </button>
+
+              {/* 双重触发保障的日期胶囊：点击任何位置都能弹出手机系统日历 */}
+              <div
+                onClick={openNativeDatePicker}
+                className="relative flex items-center justify-center bg-indigo-50 active:bg-indigo-100 border border-indigo-200 text-indigo-700 rounded-xl px-2.5 h-9 cursor-pointer select-none"
+              >
+                <span className="text-xs font-black tracking-tight pointer-events-none flex items-center gap-1">
+                  <span>📅</span>
+                  <span>{selectedDate}</span>
+                </span>
+                <input
+                  ref={dateInputRef}
+                  type="date"
+                  value={selectedDate}
+                  onChange={e => {
+                    if (e.target.value) setSelectedDate(e.target.value);
+                  }}
+                  className="date-overlay-input absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                />
+              </div>
+
+              <button
+                type="button"
+                onClick={() => changeDateByDays(1)}
+                className="w-9 h-9 flex items-center justify-center bg-slate-100 active:bg-indigo-100 active:text-indigo-700 rounded-xl text-slate-700 font-black text-sm select-none"
+                title="后一天"
+              >
+                ▶
+              </button>
+
               <button
                 type="button"
                 onClick={() => setShowSystemSettings(!showSystemSettings)}
-                className={`w-9 h-9 flex items-center justify-center rounded-xl border text-base transition ${showSystemSettings ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 border-slate-200'}`}
+                className={`w-9 h-9 flex items-center justify-center rounded-xl border text-base shrink-0 transition ${showSystemSettings ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 border-slate-200'}`}
               >
                 ⚙️
               </button>
@@ -1035,12 +1106,12 @@
             </div>
           )}
 
-          {/* 2. 全局常驻：今日核心能量仪表盘 */}
+          {/* 2. 全局常驻：核心能量仪表盘 */}
           <div className="bg-white p-4 rounded-3xl shadow-sm border border-slate-200/80 space-y-3">
             <div className="flex items-end justify-between">
               <div>
                 <span className="text-xs font-bold text-slate-400 uppercase tracking-wider block">
-                  {calDiff >= 0 ? '今日还可摄入' : '🚨 今日已超标热量'}
+                  {isToday ? '今日' : selectedDate} {calDiff >= 0 ? '还可摄入' : '🚨 已超标热量'}
                 </span>
                 <div className="flex items-baseline gap-1.5 mt-0.5">
                   <span className={`text-3xl font-black tracking-tight ${calDiff >= 0 ? 'text-slate-900' : 'text-rose-600'}`}>
@@ -1055,7 +1126,6 @@
               </div>
             </div>
 
-            {/* 总热量进度条 */}
             <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden">
               <div
                 style={{ width: `${calProgressPct}%` }}
@@ -1063,7 +1133,6 @@
               />
             </div>
 
-            {/* 三大营养素胶囊进度条 */}
             <div className="grid grid-cols-3 gap-2.5 pt-1">
               <div className="bg-amber-50/70 border border-amber-100 px-3 py-2 rounded-2xl">
                 <div className="flex justify-between text-xs font-bold text-amber-900 mb-1">
@@ -1095,7 +1164,7 @@
             </div>
           </div>
 
-          {/* 3. 重要节点醒目提醒横幅（当触发超标、蛋白不足或高油时自动突出显示） */}
+          {/* 3. 重要节点醒目提醒横幅 */}
           {smartAlerts.length > 0 && (
             <div className="space-y-2">
               {smartAlerts.map((al, i) => (
@@ -1134,15 +1203,14 @@
           {currentStep === 1 && (
             <div key="step-1" className="bg-white p-5 rounded-3xl shadow-sm border border-slate-200/80 space-y-5">
               <div className="flex justify-between items-center border-b border-slate-100 pb-3">
-                <h2 className="text-base font-black text-slate-900">👤 今日体重与身体参数</h2>
+                <h2 className="text-base font-black text-slate-900">👤 当日体重与身体参数</h2>
                 <span className="text-xs font-bold bg-indigo-50 text-indigo-600 px-2.5 py-1 rounded-full">{selectedDate}</span>
               </div>
 
-              {/* 醒目体重打卡大卡片 */}
               <div className="bg-gradient-to-r from-indigo-600 to-indigo-700 text-white p-4 rounded-2xl flex items-center justify-between shadow-sm">
                 <div>
-                  <span className="text-xs text-indigo-200 font-bold block">📌 每日必打卡项</span>
-                  <span className="text-base font-black">今日空腹体重 (kg)</span>
+                  <span className="text-xs text-indigo-200 font-bold block">📌 每日必打卡项 ({selectedDate})</span>
+                  <span className="text-base font-black">当日空腹体重 (kg)</span>
                 </div>
                 <input
                   type="number"
@@ -1208,7 +1276,6 @@
           {/* ==================== 第 2 页：膳食录入与联网百科 ==================== */}
           {currentStep === 2 && (
             <div key="step-2" className="space-y-3.5">
-              {/* 醒目双入口：拍照识热量 + 搜索/联网查未知食物 */}
               <div className="bg-white p-4 rounded-3xl border border-slate-200/80 shadow-sm space-y-3.5">
                 <div className="flex items-center justify-between gap-2">
                   <div>
@@ -1228,7 +1295,6 @@
 
                 {aiError && <div className="bg-rose-50 border border-rose-200 text-rose-600 p-3 rounded-2xl text-sm font-medium">{aiError}</div>}
 
-                {/* 拍照识别结果确认卡片 */}
                 {(aiLoading || aiDetectedFoods.length > 0) && (
                   <div className="bg-indigo-50/80 border border-indigo-200 p-3.5 rounded-2xl space-y-2.5">
                     <div className="flex items-center gap-2.5">
@@ -1248,7 +1314,6 @@
                   </div>
                 )}
 
-                {/* 搜索框 + 联网查特点直通按钮 */}
                 <div className="flex gap-2">
                   <div className="relative flex-1">
                     <input
@@ -1272,7 +1337,6 @@
                   </button>
                 </div>
 
-                {/* 🌐 联网 AI 食物营养百科与特点突出卡片 */}
                 {foodInsightCard && (
                   <div className="bg-gradient-to-br from-emerald-50 to-teal-50 border-2 border-emerald-300 p-4 rounded-2xl space-y-3 shadow-sm">
                     <div className="flex items-start justify-between gap-2">
@@ -1314,14 +1378,13 @@
                           onClick={() => { saveFoodToUserDB(foodInsightCard, true); setFoodInsightCard(null); setSearchQuery(''); }}
                           className="flex-1 bg-emerald-600 text-white font-black px-3.5 py-2.5 rounded-xl text-xs shadow-sm"
                         >
-                          + 入账今日 & 存库
+                          + 入账当日 & 存库
                         </button>
                       </div>
                     </div>
                   </div>
                 )}
 
-                {/* 份量倍率胶囊选择 */}
                 <div className="flex items-center justify-between bg-slate-100 p-1 rounded-2xl">
                   <span className="text-xs font-bold text-slate-500 pl-3">点选份量倍率：</span>
                   <div className="flex gap-1">
@@ -1338,7 +1401,6 @@
                   </div>
                 </div>
 
-                {/* 横向无滚动条分类胶囊 */}
                 <div className="flex gap-2 overflow-x-auto no-scrollbar py-0.5">
                   {FOOD_CATEGORIES.map(cat => (
                     <button
@@ -1354,7 +1416,6 @@
                   ))}
                 </div>
 
-                {/* 食物列表（大字号 + 高油高碳醒目提醒角标） */}
                 <div className="max-h-72 overflow-y-auto divide-y divide-slate-100 bg-slate-50/60 rounded-2xl px-3 border border-slate-200/70">
                   {filteredDB.length === 0 ? (
                     <div className="py-8 text-center space-y-3">
@@ -1423,7 +1484,6 @@
                   )}
                 </div>
 
-                {/* 折叠式自定义添加与联网测算 */}
                 <div className="border-t border-slate-100 pt-2.5">
                   <button
                     type="button"
@@ -1458,23 +1518,22 @@
                         <input type="number" step="0.1" placeholder="蛋白质 (g)" value={customFood.pro} onChange={e => setCustomFood({...customFood, pro: e.target.value})} className="border border-slate-300 rounded-xl px-3 py-2 bg-white" />
                         <input type="number" step="0.1" placeholder="脂肪 (g)" value={customFood.fat} onChange={e => setCustomFood({...customFood, fat: e.target.value})} className="border border-slate-300 rounded-xl px-3 py-2 bg-white" />
                       </div>
-                      <button type="submit" className="w-full bg-slate-900 text-white font-bold rounded-xl py-2.5 text-sm">+ 入账今日并存入自建库</button>
+                      <button type="submit" className="w-full bg-slate-900 text-white font-bold rounded-xl py-2.5 text-sm">+ 入账当日并存入自建库</button>
                     </form>
                   )}
                 </div>
               </div>
 
-              {/* 今日已录餐品账单 */}
               <div className="bg-white p-4 rounded-3xl border border-slate-200/80 shadow-sm space-y-3">
                 <div className="flex justify-between items-center">
-                  <span className="text-sm font-black text-slate-900">📋 今日已吃清单 ({meals.length} 项 · {totals.cal} kcal)</span>
+                  <span className="text-sm font-black text-slate-900">📋 {isToday ? '今日' : selectedDate} 已吃清单 ({meals.length} 项 · {totals.cal} kcal)</span>
                   {meals.length > 0 && (
                     <button type="button" onClick={() => updateDayRecord(r => ({ ...r, meals: [] }))} className="text-xs text-rose-600 font-bold">清空全部</button>
                   )}
                 </div>
 
                 {meals.length === 0 ? (
-                  <div className="text-center py-6 text-xs text-slate-400">今日还没有记录饮食，点击上方拍照或从列表添加吧！</div>
+                  <div className="text-center py-6 text-xs text-slate-400">该日期还没有记录饮食，点击上方拍照或从列表添加吧！</div>
                 ) : (
                   <div className="space-y-2">
                     {meals.map(m => (
@@ -1502,7 +1561,7 @@
               <div className="flex justify-between items-center border-b border-slate-100 pb-3">
                 <div>
                   <h2 className="text-base font-black text-slate-900">🚴 运动热量抵消与打卡</h2>
-                  <p className="text-xs text-slate-400">按你当前体重 ({activeWeight}kg) 精准测算消耗</p>
+                  <p className="text-xs text-slate-400">按你当日体重 ({activeWeight}kg) 精准测算消耗</p>
                 </div>
                 <div className="flex bg-slate-100 p-1 rounded-xl text-xs font-bold">
                   {['全部', '有氧', '无氧'].map(t => (
@@ -1511,7 +1570,6 @@
                 </div>
               </div>
 
-              {/* 运动时长选择卡片 */}
               <div className="bg-emerald-50/80 border border-emerald-200 p-3.5 rounded-2xl space-y-2.5">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-black text-emerald-950">⏱️ 选择单次运动时长：</span>
@@ -1531,10 +1589,10 @@
                 <div className="flex items-center gap-2 text-xs pt-1">
                   <span className="text-emerald-800 font-medium">抵消目标：</span>
                   <button type="button" onClick={() => setOffsetMode('smart')} className={`px-2.5 py-1 rounded-lg font-bold ${offsetMode === 'smart' ? 'bg-emerald-700 text-white' : 'bg-white text-emerald-800'}`}>
-                    {calDiff < 0 ? `抵消今日超标 (${Math.abs(calDiff)} kcal)` : '额外刷脂 400 kcal'}
+                    {calDiff < 0 ? `抵消当日超标 (${Math.abs(calDiff)} kcal)` : '额外刷脂 400 kcal'}
                   </button>
                   <button type="button" onClick={() => setOffsetMode('all')} className={`px-2.5 py-1 rounded-lg font-bold ${offsetMode === 'all' ? 'bg-emerald-700 text-white' : 'bg-white text-emerald-800'}`}>
-                    抵消今日全餐 ({totals.cal} kcal)
+                    抵消当日全餐 ({totals.cal} kcal)
                   </button>
                 </div>
               </div>
@@ -1570,7 +1628,7 @@
               {workouts.length > 0 && (
                 <div className="bg-emerald-50 border border-emerald-200 p-3.5 rounded-2xl space-y-2">
                   <div className="flex justify-between items-center text-sm font-black text-emerald-950">
-                    <span>🏆 今日已打卡运动 (共消耗 {burnedCalories} kcal)</span>
+                    <span>🏆 当日已打卡运动 (共消耗 {burnedCalories} kcal)</span>
                     <button type="button" onClick={() => updateDayRecord(r => ({ ...r, workouts: [] }))} className="text-xs text-rose-600 font-bold">清空</button>
                   </div>
                   {workouts.map(w => (
@@ -1618,7 +1676,7 @@
 
               <div className="space-y-4">
                 <div className="space-y-1.5">
-                  <span className="text-xs text-slate-600 font-bold block">📊 每日热量缺口 (绿=达标减脂，红=热量超标)</span>
+                  <span className="text-xs text-slate-600 font-bold block">📊 每日热量缺口 (点击柱条可直接切换日期)</span>
                   <div className="h-36 flex items-end justify-between gap-1.5 pb-2 pt-5 px-2.5 bg-slate-50 rounded-2xl border border-slate-100">
                     {trendSeries.map(d => {
                       const isSelected = d.date === selectedDate, hasData = d.deficit !== null, isDeficit = hasData && d.deficit >= 0;
@@ -1669,7 +1727,7 @@
           {currentStep === 5 && (
             <div key="step-5" className="bg-white p-4 rounded-3xl border border-slate-200/80 shadow-sm space-y-4">
               <div className="flex justify-between items-center border-b border-slate-100 pb-3">
-                <h2 className="text-base font-black text-slate-900">🏆 今日终极结算与明日规划</h2>
+                <h2 className="text-base font-black text-slate-900">🏆 当日终极结算与明日规划</h2>
                 <span className="text-xs font-bold bg-indigo-50 text-indigo-600 px-2.5 py-1 rounded-full">{selectedDate}</span>
               </div>
 
@@ -1688,11 +1746,11 @@
                     <span className="text-2xl font-black text-emerald-400">+{burnedCalories} <small className="text-xs">kcal</small></span>
                   </div>
                   <div className="border-t border-indigo-800/80 pt-3">
-                    <span className="text-xs text-indigo-300 block">今日饮食总摄入</span>
+                    <span className="text-xs text-indigo-300 block">当日饮食总摄入</span>
                     <span className="text-2xl font-black">{totals.cal} <small className="text-xs">kcal</small></span>
                   </div>
                   <div className="border-t border-l border-indigo-800/80 pt-3">
-                    <span className="text-xs text-indigo-200 block font-bold">今日净热量缺口</span>
+                    <span className="text-xs text-indigo-200 block font-bold">当日净热量缺口</span>
                     <span className={`text-2xl font-black ${actualDeficit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                       {actualDeficit >= 0 ? `-${actualDeficit}` : `+${Math.abs(actualDeficit)}`} <small className="text-xs font-bold">kcal</small>
                     </span>
@@ -1704,8 +1762,8 @@
               <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 text-sm space-y-1.5">
                 <div className="font-black text-slate-900">📌 系统智能诊断提醒：</div>
                 <p className="text-slate-700 leading-relaxed">
-                  {actualDeficit >= 300 ? `✅ 太棒了！今日创造了 ${actualDeficit} kcal 的黄金减脂缺口，请保持充足睡眠。` : actualDeficit >= 0 ? `⚖️ 今日热量基本收支平衡（微缺口 ${actualDeficit} kcal），若想加快减脂进度，明日可增加 30 分钟有氧运动。` : `🚨 警报：今日热量盈余 ${Math.abs(actualDeficit)} kcal！建议今晚或明天安排 40 分钟慢跑/坡度走抵消，明日主食减半并多喝温水排钠。`}
-                  {totals.pro < targets.pro * 0.8 ? ` 另外今日蛋白质还差 ${(targets.pro - totals.pro).toFixed(0)}g，明天早餐建议加上两颗鸡蛋或无糖豆浆，守住肌肉不掉代谢！` : ''}
+                  {actualDeficit >= 300 ? `✅ 太棒了！当日创造了 ${actualDeficit} kcal 的黄金减脂缺口，请保持充足睡眠。` : actualDeficit >= 0 ? `⚖️ 当日热量基本收支平衡（微缺口 ${actualDeficit} kcal），若想加快减脂进度，明日可增加 30 分钟有氧运动。` : `🚨 警报：当日热量盈余 ${Math.abs(actualDeficit)} kcal！建议安排 40 分钟慢跑/坡度走抵消，次日主食减半并多喝温水排钠。`}
+                  {totals.pro < targets.pro * 0.8 ? ` 另外当日蛋白质还差 ${(targets.pro - totals.pro).toFixed(0)}g，次日早餐建议加上两颗鸡蛋或无糖豆浆，守住肌肉不掉代谢！` : ''}
                 </p>
               </div>
 
@@ -1730,7 +1788,7 @@
             </div>
           )}
 
-          {/* 4. 手机端底部固定毛玻璃导航栏 (Bottom Tab Bar) */}
+          {/* 4. 手机端底部固定毛玻璃导航栏 */}
           <nav className="fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-md border-t border-slate-200/90 z-50 bottom-nav-safe shadow-lg">
             <div className="max-w-lg mx-auto grid grid-cols-5 px-2 py-1.5">
               {[
